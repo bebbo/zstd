@@ -6,6 +6,8 @@ and a command line utility producing and decoding `.zst` compressed files.
 For other programming languages,
 you can consult a list of known ports on [Zstandard homepage](http://www.zstd.net/#other-languages).
 
+This fork provides a __Total Commander Packer Plugin__ to use zstd inside Total Commander(http://ghisler.com).
+
 |Branch      |Status   |
 |------------|---------|
 |master      | [![Build Status](https://travis-ci.org/facebook/zstd.svg?branch=master)](https://travis-ci.org/facebook/zstd) |
