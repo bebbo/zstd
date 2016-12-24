@@ -108,6 +108,8 @@ static struct ZHandle * newZh() {
 	if (i >= numslots) {
 		numslots += i + 1;
 		slots = (struct ZHandle **)realloc(slots, sizeof(struct ZHandle *) * numslots);
+		for (int j = i + 1; j < numslots; ++j)
+			slots[j] = 0;
 	}
 
 	zh->slot = i;
