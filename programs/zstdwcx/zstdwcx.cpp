@@ -63,6 +63,7 @@ struct ZHandle {
 	wchar_t arcname[MAX_PATH];
 	wchar_t name[MAX_PATH];
 	int end;
+	int slot;
 };
 
 static struct ZHandle defZH;
@@ -80,10 +81,57 @@ static int showProgress(struct ZHandle * zh, wchar_t * txt, int delta) {
 	return -1;
 }
 
+static struct ZHandle ** slots;
+static int numslots;
+static volatile unsigned int spinlock;
+
+
+// ============================================================================
+// add a ZHandle to slots
+// ============================================================================
+static struct ZHandle * newZh() {
+
+	while (InterlockedExchange(&spinlock, 1) != 0) {
+		Yield();
+	}
+
+	struct ZHandle * zh = new ZHandle();
+	if (!zh)
+		return 0;
+
+	int i = 1;
+	for (; i < numslots; ++i) {
+		if (slots[i] == 0)
+			break;
+	}
+
+	if (i >= numslots) {
+		numslots += i + 1;
+		slots = (struct ZHandle **)realloc(slots, sizeof(struct ZHandle *) * numslots);
+	}
+
+	zh->slot = i;
+	slots[i] = zh;
+
+	spinlock = 0;
+
+	return zh;
+}
+
 // ============================================================================
 // free a ZHandle
 // ============================================================================
 static void freeZh(struct ZHandle * zh) {
+	if (!zh)
+		return;
+
+	if (zh->slot < 0 || zh->slot >= numslots)
+		return;
+
+	if (slots[zh->slot] != zh)
+		return;
+
+	slots[zh->slot] = 0;
 
 	if (zh->dstream)
 		ZSTD_freeDStream(zh->dstream);
@@ -106,7 +154,8 @@ static void freeZh(struct ZHandle * zh) {
 extern "C" int __stdcall OpenArchiveW(tOpenArchiveDataW* archiveData)
 {
 	archiveData->OpenResult = E_EOPEN;
-	struct ZHandle * zh = new ZHandle();
+	struct ZHandle * zh = newZh();
+	if (!zh) return E_NO_MEMORY;
 	do { // while (0);
 
 		struct _stat st;
@@ -133,14 +182,14 @@ extern "C" int __stdcall OpenArchiveW(tOpenArchiveDataW* archiveData)
 
 		// copy name and remove the extension
 		wcscpy_s(zh->name, MAX_PATH, archiveData->ArcNameW);
-		for (int i = wcslen(zh->name); i >= 0; --i) {
+		for (int i = (int)wcslen(zh->name); i >= 0; --i) {
 			if (zh->name[i] == L'\\') {
 				wcscpy_s(zh->name, MAX_PATH, &zh->name[i + 1]);
 				break;
 			}
 		}
 		wcscpy_s(zh->arcname, MAX_PATH, zh->name);
-		for (int i = wcslen(zh->name); i >= 0; --i) {
+		for (int i = (int)wcslen(zh->name); i >= 0; --i) {
 			if (zh->name[i] == L'.') {
 				zh->name[i] = 0;
 				break;
@@ -164,20 +213,20 @@ extern "C" int __stdcall OpenArchiveW(tOpenArchiveDataW* archiveData)
 			break;
 
 		// read first block - and more
-		int r = _read(zh->file, zh->buffIn, zh->buffInSize);
+		int r = _read(zh->file, zh->buffIn, (int)zh->buffInSize);
 		if (!r)
 			break;
 
 		// rewind to toRead
 		zh->read = zh->toRead;
-		_lseek(zh->file, zh->toRead, SEEK_SET);
+		_lseeki64(zh->file, zh->toRead, SEEK_SET);
 
 		zh->uSize = ZSTD_getDecompressedSize(zh->buffIn, r);
 		if (!zh->uSize)
 			zh->uSize = -1;
 
 		archiveData->OpenResult = 0;
-		return (int)zh;
+		return zh->slot;
 	} while (0);
 
 	//cleanup
@@ -190,13 +239,11 @@ extern "C" int __stdcall OpenArchiveW(tOpenArchiveDataW* archiveData)
 // ProcessFileW
 // ============================================================================
 extern "C" int __stdcall ProcessFileW(int hArcData, int operation, wchar_t * destPath, wchar_t* destName) {
-	if (!hArcData || hArcData == -1)
+	if (hArcData < 0 || hArcData >= numslots)
 		return E_BAD_ARCHIVE;
-
-//	if (!destName)
-//		return E_NO_FILES;
-
-	struct ZHandle * zh = (struct ZHandle *) hArcData;
+	struct ZHandle * zh = slots[hArcData];
+	if (!zh)
+		return E_NO_MEMORY;
 
 	if (operation == PK_SKIP)
 		return 0;
@@ -210,7 +257,7 @@ extern "C" int __stdcall ProcessFileW(int hArcData, int operation, wchar_t * des
 		if (outfile == -1)
 			return E_EWRITE;
 	}
-	
+
 	int ret = 0;
 	while (zh->read) {
 		ZSTD_inBuffer input = { zh->buffIn, zh->read, 0 };
@@ -222,16 +269,16 @@ extern "C" int __stdcall ProcessFileW(int hArcData, int operation, wchar_t * des
 				break;
 			}
 			if (outfile != -1) {
-				int written = _write(outfile, zh->buffOut, output.pos);
+				int written = _write(outfile, zh->buffOut, (int)output.pos);
 				if (written != output.pos) {
 					ret = E_EWRITE;
 					break;
 				}
 			}
 		}
-		if (!showProgress(zh, destName, zh->read))
+		if (!showProgress(zh, destName, (int)zh->read))
 			return E_EABORTED;
-		zh->read = _read(zh->file, zh->buffIn, zh->toRead);
+		zh->read = _read(zh->file, zh->buffIn, (int)zh->toRead);
 	}
 
 	if (outfile != -1)
@@ -245,9 +292,13 @@ extern "C" int __stdcall ProcessFileW(int hArcData, int operation, wchar_t * des
 // CloseArchive
 // ============================================================================
 extern "C" int __stdcall CloseArchive(int hArcData) {
-	if (!hArcData || hArcData == -1) return E_ECLOSE;
+	if (hArcData < 0 || hArcData >= numslots)
+		return E_BAD_ARCHIVE;
+	struct ZHandle * zh = slots[hArcData];
+	if (!zh)
+		return E_NO_MEMORY;
 
-	freeZh((struct ZHandle *) hArcData);
+	freeZh(zh);
 	return 0;
 }
 
@@ -258,9 +309,14 @@ extern "C" int __stdcall CanYouHandleThisFileW(wchar_t* filename) {
 	tOpenArchiveDataW oad = {
 		filename, 0, 0, filename, 0, 0, 0
 	};
-	struct ZHandle * zh = (struct ZHandle *)OpenArchiveW(&oad);
+
+
+	int hArcData = OpenArchiveW(&oad);
+	if (hArcData < 0 || hArcData >= numslots)
+		return E_BAD_ARCHIVE;
+	struct ZHandle * zh = slots[hArcData];
 	if (!zh)
-		return 0;
+		return E_NO_MEMORY;
 
 	freeZh(zh);
 	return oad.OpenResult == 0;
@@ -270,9 +326,16 @@ extern "C" int __stdcall CanYouHandleThisFileW(wchar_t* filename) {
 // ReadHeader
 // ============================================================================
 extern "C" int __stdcall ReadHeader(int hArcData, tHeaderData* headerData) {
-	if (!hArcData || hArcData == -1) return E_ABORT;
-	struct ZHandle * zh = (struct ZHandle *) hArcData;
-	if (zh->end) return E_END_ARCHIVE;
+	if (hArcData < 0 || hArcData >= numslots)
+		return E_BAD_ARCHIVE;
+
+	struct ZHandle * zh = slots[hArcData];
+	if (!zh)
+		return E_NO_MEMORY;
+
+	if (zh->end)
+		return E_END_ARCHIVE;
+
 	headerData->PackSize = (int)zh->cSize;
 	headerData->UnpSize = (int)zh->uSize;
 	headerData->FileTime = zh->filetime;
@@ -286,9 +349,16 @@ extern "C" int __stdcall ReadHeader(int hArcData, tHeaderData* headerData) {
 // ReadHeaderEx(W)
 // ============================================================================
 extern "C" int __stdcall ReadHeaderExW(int hArcData, tHeaderDataExW* headerData) {
-	if (!hArcData || hArcData == -1) return E_ABORT;
-	struct ZHandle * zh = (struct ZHandle *) hArcData;
-	if (zh->end) return E_END_ARCHIVE;
+	if (hArcData < 0 || hArcData >= numslots)
+		return E_BAD_ARCHIVE;
+
+	struct ZHandle * zh = slots[hArcData];
+	if (!zh)
+		return E_NO_MEMORY;
+
+	if (zh->end)
+		return E_END_ARCHIVE;
+
 	headerData->PackSize = (DWORD)zh->cSize;
 	headerData->PackSizeHigh = (int)(zh->cSize >> 32);
 	headerData->UnpSize = (int)zh->uSize;
@@ -302,10 +372,17 @@ extern "C" int __stdcall ReadHeaderExW(int hArcData, tHeaderDataExW* headerData)
 }
 
 extern "C" int __stdcall ReadHeaderEx(int hArcData, tHeaderDataEx* headerData) {
-	if (!hArcData || hArcData == -1) return E_ABORT;
-	struct ZHandle * zh = (struct ZHandle *) hArcData;
-	if (zh->end) return E_END_ARCHIVE;
-	headerData->PackSize = (DWORD) zh->cSize;
+	if (hArcData < 0 || hArcData >= numslots)
+		return E_BAD_ARCHIVE;
+
+	struct ZHandle * zh = slots[hArcData];
+	if (!zh)
+		return E_NO_MEMORY;
+
+	if (zh->end)
+		return E_END_ARCHIVE;
+
+	headerData->PackSize = (DWORD)zh->cSize;
 	headerData->PackSizeHigh = (int)(zh->cSize >> 32);
 
 	headerData->UnpSize = (int)zh->uSize;
@@ -346,7 +423,7 @@ extern "C" int __stdcall PackFilesW(wchar_t *packedFile, wchar_t *subPath, wchar
 	int ret = 0;
 
 	do { //while (0);
-		_wsopen_s(&infile, fullName, _O_BINARY | _O_RDONLY, _SH_DENYWR, _S_IREAD);
+		_wsopen_s(&infile, fullName, _O_BINARY | _O_RDONLY, _SH_DENYNO, _S_IREAD);
 		if (infile == -1) {
 			ret = E_EREAD;
 			break;
@@ -389,7 +466,7 @@ extern "C" int __stdcall PackFilesW(wchar_t *packedFile, wchar_t *subPath, wchar
 		}
 
 		size_t read, toRead = buffInSize;
-		while (!ret && (read = _read(infile, buffIn, toRead))) {
+		while (!ret && (read = _read(infile, buffIn, (int)toRead))) {
 			ZSTD_inBuffer input = { buffIn, read, 0 };
 			while (input.pos < input.size) {
 				ZSTD_outBuffer output = { buffOut, buffOutSize, 0 };
@@ -399,20 +476,20 @@ extern "C" int __stdcall PackFilesW(wchar_t *packedFile, wchar_t *subPath, wchar
 					break;
 				}
 				if (toRead > buffInSize) toRead = buffInSize;   /* Safely handle case when `buffInSize` is manually changed to a value < ZSTD_CStreamInSize()*/
-				_write(outfile, buffOut, output.pos);
+				_write(outfile, buffOut, (int)output.pos);
 			}
 
-			if (!showProgress(&defZH, packedFile, read))
+			if (!showProgress(&defZH, packedFile, (int)read))
 				ret = E_EABORTED;
 		}
 		if (!ret) {
 			ZSTD_outBuffer output = { buffOut, buffOutSize, 0 };
 			size_t const remainingToFlush = ZSTD_endStream(cstream, &output);   /* close frame */
-			if (remainingToFlush) { 
+			if (remainingToFlush) {
 				ret = E_EABORTED;
 				break;
 			}
-			_write(outfile, buffOut, output.pos);
+			_write(outfile, buffOut, (int)output.pos);
 		}
 	} while (0);
 
@@ -495,7 +572,7 @@ extern "C" void __stdcall ConfigurePacker(HWND ParentHandle, HINSTANCE hinstance
 // ============================================================================
 extern "C" int __stdcall GetPackerCaps() {
 	return PK_CAPS_NEW | PK_CAPS_OPTIONS
-//		| PK_CAPS_MEMPACK 
+		//		| PK_CAPS_MEMPACK 
 		| PK_CAPS_BY_CONTENT | PK_CAPS_SEARCHTEXT
 		;
 }
@@ -511,13 +588,17 @@ extern "C" void __stdcall PackSetDefaultParams(PackDefaultParamStruct* dps) {
 // SetProcessDataProc(W)
 // ============================================================================
 void __stdcall SetProcessDataProcW(int hArcData, tProcessDataProcW pProcessDataProc) {
-	struct ZHandle * zh = hArcData == -1 ? &defZH : (struct ZHandle *)hArcData;
-	if (!zh) return;
+	struct ZHandle * zh = hArcData < 0 || hArcData >= numslots ? &defZH : slots[hArcData];
+	if (!zh)
+		return;
+
 	zh->pprocW = pProcessDataProc;
 }
 void __stdcall SetProcessDataProc(int hArcData, tProcessDataProc pProcessDataProc) {
-	struct ZHandle * zh = hArcData == -1 ? &defZH : (struct ZHandle *)hArcData;
-	if (!zh) return;
+	struct ZHandle * zh = hArcData < 0 || hArcData >= numslots ? &defZH : slots[hArcData];
+	if (!zh)
+		return;
+
 	zh->pproc = pProcessDataProc;
 }
 

@@ -23,5 +23,5 @@
 #define WCXNAME "zstd.wcx"
 #endif
 
-#define VERSION1 1,1,3,1
-#define VERSION2 "1.1.3.1"
+#define VERSION1 1,1,3,2
+#define VERSION2 "1.1.3.2"
