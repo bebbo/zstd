@@ -106,8 +106,13 @@ static struct ZHandle * newZh() {
 	}
 
 	if (i >= numslots) {
-		numslots += i + 1;
-		slots = (struct ZHandle **)realloc(slots, sizeof(struct ZHandle *) * numslots);
+		int nn = numslots + i + 1;
+		struct ZHandle ** nslots = (struct ZHandle **)realloc(slots, sizeof(struct ZHandle *) * nn);
+		if (!nslots)
+			return 0;
+
+		numslots = nn;
+		slots = nslots;
 		for (int j = i + 1; j < numslots; ++j)
 			slots[j] = 0;
 	}
@@ -160,9 +165,12 @@ extern "C" int __stdcall OpenArchiveW(tOpenArchiveDataW* archiveData)
 	if (!zh) return E_NO_MEMORY;
 	do { // while (0);
 
-		struct _stat st;
-		if (_wstat(archiveData->ArcNameW, &st))
+		struct _stat64 st;
+		if (_wstat64(archiveData->ArcNameW, &st)) {
+			st.st_mtime = errno;
+			st.st_mode = _doserrno;
 			break;
+		}
 
 		// read file time
 		struct tm filetime;

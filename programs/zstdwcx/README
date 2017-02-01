@@ -41,6 +41,9 @@ SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 ======================== HISTORY =========================
 ==========================================================
 
+VERSION 1.1.3.3 [2017-02-01]
+* Fixes for compressed file size > 2GB
+
 VERSION 1.1.3.2 [2016-12-24]
 * Fixes for 64 bit version for memory pointer > 32 bit
 
