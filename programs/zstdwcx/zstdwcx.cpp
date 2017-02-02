@@ -56,6 +56,7 @@ struct ZHandle {
 	void* buffIn;
 	size_t buffOutSize;
 	void * buffOut;
+	ZSTD_CStream* cstream;
 	ZSTD_DStream* dstream;
 	size_t read, toRead;
 	tProcessDataProcW pprocW;
@@ -140,6 +141,9 @@ static void freeZh(struct ZHandle * zh) {
 
 	slots[zh->slot] = 0;
 
+	if (zh->cstream)
+		ZSTD_freeCStream(zh->cstream);
+
 	if (zh->dstream)
 		ZSTD_freeDStream(zh->dstream);
 
@@ -166,11 +170,8 @@ extern "C" int __stdcall OpenArchiveW(tOpenArchiveDataW* archiveData)
 	do { // while (0);
 
 		struct _stat64 st;
-		if (_wstat64(archiveData->ArcNameW, &st)) {
-			st.st_mtime = errno;
-			st.st_mode = _doserrno;
+		if (_wstat64(archiveData->ArcNameW, &st))
 			break;
-		}
 
 		// read file time
 		struct tm filetime;
@@ -519,17 +520,127 @@ extern "C" int __stdcall PackFilesW(wchar_t *packedFile, wchar_t *subPath, wchar
 // ============================================================================
 // PackToMem - not supported yet
 // ============================================================================
-extern "C" HANDLE __stdcall StartMemPack(int options, char* filename) {
-	return 0;
-}
-extern "C" int __stdcall PackToMem(HANDLE hMemPack, char* BufIn, int InLen, int* Taken,
-	char* BufOut, int OutLen, int* Written, int* SeekBy) {
-	return 0;
-}
-extern "C" int __stdcall DoneMemPack(HANDLE hMemPack) {
+extern "C" HANDLE __stdcall StartMemPackW(int options, wchar_t* filename) {
+	struct ZHandle * zh = newZh();
+	if (!zh) return 0;
+	int ret = 0;
+
+	int level = GetPrivateProfileInt(L"zstdwfx", L"CompressionRate", 3, inifilename);
+	if (level <= 0) level = 1;
+	if (level >= 19) level = 19;
+
+	do { //while (0);
+
+		// alloc mem
+		zh->buffInSize = ZSTD_CStreamInSize();    /* can always read one full block */
+		zh->buffOutSize = ZSTD_CStreamOutSize();  /* can always flush a full block */
+		zh->buffOut = malloc(zh->buffOutSize);
+		zh->toRead = zh->read = 0; /* used for write chunks */
+		zh->cstream = ZSTD_createCStream();
+
+		if (
+			!zh->buffOut ||
+			!zh->cstream) {
+			ret = E_NO_MEMORY;
+			break;
+		}
+
+		size_t const initResult = ZSTD_initCStream(zh->cstream, level);
+		if (ZSTD_isError(initResult)) {
+			ret = E_NOT_SUPPORTED;
+			break;
+		}
+
+		return (HANDLE)(size_t)zh->slot;
+	} while (0);
+
+	freeZh(zh);
 	return 0;
 }
 
+extern "C" HANDLE __stdcall StartMemPack(int options, char* filename) {
+	wchar_t filenameW[MAX_PATH];
+
+	qudConvert(filenameW, filename, MAX_PATH - 1);
+	return StartMemPackW(options, filenameW);
+}
+
+extern "C" int __stdcall PackToMem(int hMemPack, char* bufIn, int inLen, int* taken,
+	char* bufOut, int outLen, int* written, int* seekBy) {
+	if (hMemPack < 0 || hMemPack >= numslots)
+		return E_BAD_ARCHIVE;
+
+	struct ZHandle * zh = slots[hMemPack];
+	if (!zh)
+		return E_NO_MEMORY;
+
+	if (seekBy) *seekBy = 0;
+
+	if (!taken || !written || inLen < 0 || outLen < 0)
+		return E_NO_MEMORY;
+
+	*taken = 0;
+	*written = 0;
+
+	// no write data pending
+	if (zh->read == zh->toRead) {
+		ZSTD_outBuffer output = { zh->buffOut, zh->buffOutSize, 0 };
+		if (inLen == 0) {
+			// close created archive
+			if (!bufOut)
+				return E_NO_MEMORY;
+
+			if (zh->end)
+				return 1;
+
+			zh->end = 1; // last chunk
+
+			size_t const remainingToFlush = ZSTD_endStream(zh->cstream, &output);   /* close frame */
+			if (remainingToFlush)
+				return E_NO_MEMORY;
+
+			zh->read = 0;
+			zh->toRead = output.pos;
+		} else {
+			if (!bufIn)
+				return E_NO_MEMORY;
+
+			// fill the compressor with the provided data
+			size_t read = zh->buffInSize < (size_t)inLen ? zh->buffInSize : inLen; // limit
+			ZSTD_inBuffer input = { bufIn, read, 0 };
+			size_t x = ZSTD_compressStream(zh->cstream, &output, &input);
+			if (ZSTD_isError(x))
+				return E_EABORTED;
+
+			*taken = (int)input.pos;
+		}
+		zh->read = 0;
+		zh->toRead = output.pos;
+	}
+
+	// pending data
+	if (zh->read < zh->toRead) {
+		// limit outLen
+		if (zh->read + outLen > zh->toRead)
+			outLen = (int)(zh->toRead - zh->read);
+		memcpy_s(bufOut, outLen, &zh->read[(char*)zh->buffOut], outLen);
+		*written = outLen;
+		zh->read += outLen;
+	}
+	return 0;
+}
+
+extern "C" int __stdcall DoneMemPack(int hMemPack) {
+	if (hMemPack < 0 || hMemPack >= numslots)
+		return E_BAD_ARCHIVE;
+
+	struct ZHandle * zh = slots[hMemPack];
+	if (!zh)
+		return E_NO_MEMORY;
+
+	freeZh(zh);
+	return 0;
+}
 
 // ============================================================================
 // GetBackgroundFlags - support some
@@ -582,7 +693,7 @@ extern "C" void __stdcall ConfigurePacker(HWND ParentHandle, HINSTANCE hinstance
 // ============================================================================
 extern "C" int __stdcall GetPackerCaps() {
 	return PK_CAPS_NEW | PK_CAPS_OPTIONS
-		//		| PK_CAPS_MEMPACK 
+		| PK_CAPS_MEMPACK
 		| PK_CAPS_BY_CONTENT | PK_CAPS_SEARCHTEXT
 		;
 }

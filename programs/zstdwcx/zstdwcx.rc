@@ -32,7 +32,7 @@ CAPTION "ZStandard settings"
 FONT 8, "MS Sans Serif", 0, 0, 0x0
 BEGIN
     GROUPBOX        "Copyright",-1,5,2,293,42
-    LTEXT           "ZStandard-WFX:\tCopyright © 2016 by Stefan 'Bebbo' Franke\nZStandard:\t\tCopyright © 2016-present, Yann Collet, Facebook, Inc.",-1,11,16,267,22
+    LTEXT           "ZStandard-WFX:\tCopyright © 2016-present by Stefan 'Bebbo' Franke\nZStandard:\t\tCopyright © 2016-present, Yann Collet, Facebook, Inc.",-1,11,16,267,22
     LTEXT           "higher = better, using more memory and more time",-1,122,61,163,11
     GROUPBOX        "Compression level",-1,5,45,293,36
     COMBOBOX        IDC_COMBO,71,59,43,100,CBS_DROPDOWNLIST | CBS_HASSTRINGS | WS_TABSTOP

@@ -18,6 +18,7 @@ EXPORTS
 	DeleteFiles
 	DeleteFilesW
 	StartMemPack
+	StartMemPackW
 	PackToMem
 	DoneMemPack
 	CanYouHandleThisFile
