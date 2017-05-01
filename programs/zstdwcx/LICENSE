@@ -1,7 +1,3 @@
-==========================================================
-======================== LICENSE =========================
-==========================================================
-
 BSD License
 
 For Zstandard software
@@ -36,22 +32,3 @@ LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON
 ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
 SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-
-==========================================================
-======================== HISTORY =========================
-==========================================================
-
-VERSION 1.1.3.5 [2017-05-01]
-* Fix opening non archives
-
-VERSION 1.1.3.4 [2017-02-02]
-* Added support for MemPack thus tar.zst archives can be created.
-
-VERSION 1.1.3.3 [2017-02-01]
-* Fixes for compressed file size > 2GB
-
-VERSION 1.1.3.2 [2016-12-24]
-* Fixes for 64 bit version for memory pointer > 32 bit
-
-VERSION 1.1.3.1 [2016-12-23]
-* Initial Version - using zstandard 1.1.3

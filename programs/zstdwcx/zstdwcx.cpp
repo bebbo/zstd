@@ -270,7 +270,7 @@ extern "C" int __stdcall ProcessFileW(int hArcData, int operation, wchar_t * des
 	}
 
 	int ret = 0;
-	while (zh->read) {
+	while (!ret && zh->read) {
 		ZSTD_inBuffer input = { zh->buffIn, zh->read, 0 };
 		while (input.pos < input.size) {
 			ZSTD_outBuffer output = { zh->buffOut, zh->buffOutSize, 0 };
@@ -287,9 +287,12 @@ extern "C" int __stdcall ProcessFileW(int hArcData, int operation, wchar_t * des
 				}
 			}
 		}
-		if (!showProgress(zh, destName, (int)zh->read))
-			return E_EABORTED;
-		zh->read = _read(zh->file, zh->buffIn, (int)zh->toRead);
+		if (!ret) {
+			if (!showProgress(zh, destName, (int)zh->read))
+				ret = E_EABORTED;
+			else
+				zh->read = _read(zh->file, zh->buffIn, (int)zh->toRead);
+		}
 	}
 
 	if (outfile != -1)
